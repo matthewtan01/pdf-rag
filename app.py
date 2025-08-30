@@ -2,16 +2,21 @@ import streamlit as st
 from dotenv import load_dotenv
 from pypdf import PdfReader
 from langchain_text_splitters import CharacterTextSplitter
-from langchain_community.vectorstores import FAISS
-from langchain.memory import ConversationBufferMemory
-from langchain.chains import ConversationalRetrievalChain
 from htmlTemplates import css, bot_template, user_template
-
+from langchain_community.vectorstores import FAISS
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+from langchain.prompts import (
+    HumanMessagePromptTemplate, 
+    SystemMessagePromptTemplate, 
+    ChatPromptTemplate,
+    MessagesPlaceholder
+)
+from langchain_core.runnables import RunnableLambda
+from langchain_core.chat_history import InMemoryChatMessageHistory
+from langchain_core.runnables.history import RunnableWithMessageHistory
 
-from langchain_huggingface.embeddings import HuggingFaceEmbeddings
 
-def get_pdf_text(pdf_docs) -> str:
+def get_pdf_text(pdf_docs):
     text = ""
     for pdf in pdf_docs:
         pdf_reader = PdfReader(pdf)
@@ -33,34 +38,70 @@ def get_text_chunks(raw_text: str):
 
 def get_vectorstore(text_chunks):
     embeddings = OpenAIEmbeddings()
-    # embeddings = HuggingFaceEmbeddings(model_name="hkunlp/instructor-base")
-    vectorestore = FAISS.from_texts(texts=text_chunks, embedding=embeddings)
-    return vectorestore
+    vectorstore = FAISS.from_texts(texts=text_chunks, embedding=embeddings)
+    return vectorstore
 
+
+def get_prompt_template():
+    system_prompt = SystemMessagePromptTemplate.from_template(
+        "You are an AI assistant that answer questions based on retrieved context:" \
+        "\n {context}\n" \
+        "Give your answer in plain text only.",
+        input_variable=["context"]
+    )
+    user_prompt = HumanMessagePromptTemplate.from_template(
+        "{query}",
+        input_variables=["query"]
+    )
+    return ChatPromptTemplate([
+        system_prompt,
+        MessagesPlaceholder(variable_name="chat_history"),
+        user_prompt
+    ])
 
 def get_conversation_chain(vectorstore):
-    llm = ChatOpenAI()
-    memory = ConversationBufferMemory(memory_key='chat_history', return_messages=True)
-    conversation_chain = ConversationalRetrievalChain.from_llm(
-        llm =llm,
-        retriever=vectorstore.as_retriever(),
-        memory=memory
+    llm = ChatOpenAI(model='gpt-4o-mini')
+    retriever = vectorstore.as_retriever()
+    prompt_template = get_prompt_template()
+    def format_docs(docs):
+        return "\n\n".join(doc.page_content for doc in docs)
+    pipeline = (
+        {
+            "query": lambda x: x["query"],
+            "chat_history": lambda x: x["chat_history"],
+            "context": RunnableLambda(lambda x: retriever.invoke(x["query"])) | format_docs,
+        }
+        | prompt_template
+        | llm
     )
-    return conversation_chain
+    return RunnableWithMessageHistory(
+        pipeline,
+        get_session_history=get_chat_history,
+        input_messages_key="query",
+        history_messages_key="chat_history"
+    )
+
+
 
 
 def handle_userinput(user_question):
-    response = st.session_state.conversation({
-        'question': user_question
-    })
-    # st.write(response)
-    st.session_state.chat_history = response['chat_history']
+    response = st.session_state.conversation.invoke(
+        {"query": user_question},
+        config={"session_id": "user1"}
+    )
+    history = st.session_state.chat_history["user1"]
 
-    for i, message in enumerate(st.session_state.chat_history):
-        if i % 2 == 0:
+    for i, message in enumerate(history.messages):
+        if message.type == "human":
             st.write(user_template.replace("{{MSG}}", message.content), unsafe_allow_html=True)
-        else:
+        elif message.type == "ai":
             st.write(bot_template.replace("{{MSG}}", message.content), unsafe_allow_html=True)
+
+
+def get_chat_history(session_id: str) -> InMemoryChatMessageHistory:
+    if session_id not in st.session_state.chat_history:
+        st.session_state.chat_history[session_id] = InMemoryChatMessageHistory()
+    return st.session_state.chat_history[session_id]
 
 
 def main():
@@ -69,44 +110,31 @@ def main():
     st.write(css, unsafe_allow_html=True)
 
     if "conversation" not in st.session_state:
-        st.session_state.converation = None
+        st.session_state.conversation = None   # fixed typo: was converation
 
     if "chat_history" not in st.session_state:
-        st.session_state.chat_history = None
+        st.session_state.chat_history = {}
 
     st.header("Chat with multiple PDFs :books:")
+
+    
+
+    # --- Input goes below the conversation ---
     user_question = st.text_input("Ask a question about your documents:")
     if user_question:
         handle_userinput(user_question)
 
+    # --- Sidebar ---
     with st.sidebar:
-        st.subheader("Your docuemnts")
-        pdf_docs = st.file_uploader(
-            label="Upload your PDFs here", accept_multiple_files=True)
-        
-        
-        # Execute some code when user clicks the button, so you start it with an if clause
-        
+        st.subheader("Your documents")
+        pdf_docs = st.file_uploader("Upload your PDFs here", accept_multiple_files=True)
+
         if st.button(label="Process"):
-            
-            # All the contents in the spinner will be processed while user sees a spinning wheel
-            
             with st.spinner("Processing"):
-                # Get the raw contents of the PDF
                 raw_text = get_pdf_text(pdf_docs)
-                
-                # Get the text chunks, this will return a list of chunks of text
                 text_chunks = get_text_chunks(raw_text)
-
-                # Create vector store
                 vectorstore = get_vectorstore(text_chunks)
-
-                # Create conversation chain
                 st.session_state.conversation = get_conversation_chain(vectorstore)
-
-    
-
-
 
 if __name__ == "__main__":
     main()
