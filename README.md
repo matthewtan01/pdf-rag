@@ -16,7 +16,6 @@ This project provides both a **Streamlit web application** and a **Jupyter noteb
 ---
 
 ## Tech Stack
-- [Python 3.9+](https://www.python.org/)  
 - [Streamlit](https://streamlit.io/) – UI for chatting with PDFs  
 - [LangChain](https://www.langchain.com/) – Orchestration and prompts  
 - [OpenAI API](https://platform.openai.com/) – LLM for Q&A  
@@ -32,3 +31,4 @@ This project provides both a **Streamlit web application** and a **Jupyter noteb
 - `app.py` – Main Streamlit app  
 - `rag.ipynb` – Jupyter notebook for testing  
 - `htmlTemplates.py` – CSS & HTML templates for chat UI
+
